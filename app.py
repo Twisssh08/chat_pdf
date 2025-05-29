@@ -1,4 +1,4 @@
-import os
+import os, glob, time, base64, platform
 import streamlit as st
 from PIL import Image
 from PyPDF2 import PdfReader
@@ -7,113 +7,80 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import FAISS
 from langchain.llms import OpenAI
 from langchain.chains.question_answering import load_qa_chain
-import platform
 from gtts import gTTS
-import glob
-import time
-import base64
 
-# Configuración inicial
+# Configuración de la página
 st.set_page_config(page_title="ESCLAVO ROBOT 💬", page_icon="🤖", layout="centered")
 st.title('Generación Aumentada por Recuperación (ESCLAVO ROBOT) 💬')
 st.write("Versión de Python:", platform.python_version())
 
-# Carga de imagen
+# Imagen
 try:
-    image = Image.open('Chat_pdf.png')
-    st.image(image, width=350)
+    st.image(Image.open('Chat_pdf.png'), width=350)
 except Exception as e:
     st.warning(f"No se pudo cargar la imagen: {e}")
 
 # Sidebar
 with st.sidebar:
     st.subheader("Este Robot te ayudará a estudiar tu PDF, ¡hazle todas las preguntas que quieras!")
-    st.write("sube el pdf en la parte derecha de la página para poner a trabajar a tu nuevo esclavo!")
+    st.write("Sube el PDF y pregunta; el audio saldrá solo.")
 
-# Clave API
+# Clave OpenAI
 ke = st.text_input('Ingresa tu Clave de OpenAI', type="password")
-if ke:
-    os.environ['OPENAI_API_KEY'] = ke
-else:
-    st.warning("Por favor ingresa tu clave de API de OpenAI para continuar")
+if ke: os.environ['OPENAI_API_KEY'] = ke
+else:  st.warning("Ingresa tu clave para continuar")
 
-# Carga PDF
+# Cargar PDF
 pdf = st.file_uploader("Carga el archivo PDF", type="pdf")
 
-# Procesamiento del PDF
-if pdf is not None and ke:
+# Utilidades
+os.makedirs("temp", exist_ok=True)
+def text_to_speech(text:str)->str:
+    name = text[:20].strip().replace(" ", "_") or "audio"
+    path = f"temp/{name}.mp3"
+    if not os.path.exists(path):  # evitar regenerar si ya existe
+        gTTS(text, lang='es').save(path)
+    return path
+
+def clean_temp(days:int=7):
+    limit = time.time() - days*86400
+    for f in glob.glob("temp/*.mp3"):
+        if os.path.getmtime(f) < limit: os.remove(f)
+
+# Proceso principal
+if pdf and ke:
     try:
-        pdf_reader = PdfReader(pdf)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-        
+        text = "".join(p.extract_text() for p in PdfReader(pdf).pages)
         st.info(f"Texto extraído: {len(text)} caracteres")
-        
-        text_splitter = CharacterTextSplitter(
-            separator="\n", chunk_size=500, chunk_overlap=20, length_function=len
-        )
-        chunks = text_splitter.split_text(text)
+        splitter = CharacterTextSplitter("\n", 500, 20, len)
+        chunks = splitter.split_text(text)
         st.success(f"Documento dividido en {len(chunks)} fragmentos")
-        
-        embeddings = OpenAIEmbeddings()
-        knowledge_base = FAISS.from_texts(chunks, embeddings)
-        
-        st.subheader("Escribe qué quieres saber sobre el documento")
-        user_question = st.text_area(" ", placeholder="Escribe tu pregunta aquí...")
+        kb = FAISS.from_texts(chunks, OpenAIEmbeddings())
 
-        if user_question:
-            docs = knowledge_base.similarity_search(user_question)
-            llm = OpenAI(temperature=0, model_name="gpt-4o")
-            chain = load_qa_chain(llm, chain_type="stuff")
-            response = chain.run(input_documents=docs, question=user_question)
-            
+        user_q = st.text_area("Pregunta sobre el documento")
+
+        if user_q:
+            docs = kb.similarity_search(user_q)
+            respuesta = load_qa_chain(OpenAI(temperature=0, model_name="gpt-4o"), chain_type="stuff")\
+                        .run(input_documents=docs, question=user_q)
+
             st.markdown("### Respuesta:")
-            st.markdown(response)
+            st.markdown(respuesta)
 
-            # Sección de texto a voz
-            st.subheader("Texto para convertir a audio")
-            texto_audio = st.text_area("Texto que se convertirá en audio:", value=response)
+            # Audio automático en español
+            audio_file = text_to_speech(respuesta)
+            with open(audio_file, "rb") as f:
+                st.audio(f.read(), format="audio/mp3")
 
-            option_lang = st.selectbox("Selecciona el idioma del audio", ("Español", "English"))
-            lg = 'es' if option_lang == "Español" else 'en'
+            # Enlace de descarga
+            with open(audio_file, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            st.markdown(f'<a href="data:audio/mp3;base64,{b64}" download="{os.path.basename(audio_file)}">Descargar audio</a>',
+                        unsafe_allow_html=True)
 
-            try:
-                os.mkdir("temp")
-            except:
-                pass
-
-            def text_to_speech(text, tld, lg):
-                tts = gTTS(text, lang=lg)
-                file_name = text[:20].strip().replace(" ", "_")
-                tts.save(f"temp/{file_name}.mp3")
-                return file_name
-
-            if st.button("Convertir a Audio"):
-                filename = text_to_speech(texto_audio, 'com', lg)
-                audio_path = f"temp/{filename}.mp3"
-                with open(audio_path, "rb") as audio_file:
-                    st.audio(audio_file.read(), format="audio/mp3")
-
-                def get_download_link(file_path):
-                    with open(file_path, "rb") as f:
-                        data = f.read()
-                    b64 = base64.b64encode(data).decode()
-                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(file_path)}">Descargar Audio</a>'
-                    return href
-
-                st.markdown(get_download_link(audio_path), unsafe_allow_html=True)
-
-            def remove_old_files(days_old=7):
-                now = time.time()
-                limit = days_old * 86400
-                for f in glob.glob("temp/*.mp3"):
-                    if os.path.isfile(f) and os.stat(f).st_mtime < now - limit:
-                        os.remove(f)
-
-            remove_old_files()
+            clean_temp()
 
     except Exception as e:
-        st.error(f"Error al procesar el PDF: {str(e)}")
         import traceback
+        st.error(f"Error: {e}")
         st.error(traceback.format_exc())

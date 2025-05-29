@@ -1,3 +1,5 @@
+streamlit
+requests
 langchain==0.0.154
 PyPDF2==3.0.1
 python-dotenv==1.0.0
@@ -8,3 +10,6 @@ openai==0.28
 tiktoken
 altair==4.2.0
 streamlit-lottie
+gTTS==2.2.2
+googletrans==3.1.0a0
+elevenlabs

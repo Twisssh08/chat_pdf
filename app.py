@@ -1,96 +1,119 @@
-import streamlit as st
-from PyPDF2 import PdfReader
-from gtts import gTTS
 import os
-import base64
-import time
-import glob
-
+import streamlit as st
 from PIL import Image
+from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import FAISS
-from langchain.chat_models import ChatOpenAI
+from langchain.llms import OpenAI
 from langchain.chains.question_answering import load_qa_chain
+import platform
+from gtts import gTTS
+import glob
+import time
+import base64
 
-# Estilo visual
-st.set_page_config(page_title="ESCLAVO ROBOT 📚💔", page_icon="📚", layout="centered")
+# Configuración inicial
+st.set_page_config(page_title="ESCLAVO ROBOT 💬", page_icon="🤖", layout="centered")
+st.title('Generación Aumentada por Recuperación (ESCLAVO ROBOT) 💬')
+st.write("Versión de Python:", platform.python_version())
 
-st.markdown("""
-    <style>
-    body {background-color: #1e1e2f; color: #fce4ec; font-family: "Courier New", monospace;}
-    h1 {color: #ff80ab;}
-    .stButton>button {background-color: #ffb6b9; color: #ffffff; border-radius: 10px; padding: 8px 20px;}
-    .stButton>button:hover {background-color: #f48fb1;}
-    </style>
-    """, unsafe_allow_html=True)
+# Carga de imagen
+try:
+    image = Image.open('Chat_pdf.png')
+    st.image(image, width=350)
+except Exception as e:
+    st.warning(f"No se pudo cargar la imagen: {e}")
 
-st.title('ESCLAVO ROBOT 📚💔')
-
+# Sidebar
 with st.sidebar:
-    st.subheader("Sube un PDF y pregúntale lo que quieras. Luego puedes escuchar la respuesta.")
+    st.subheader("Este Robot te ayudará a estudiar tu PDF, ¡hazle todas las preguntas que quieras!")
+    st.write("sube el pdf en la parte derecha de la página para poner a trabajar a tu nuevo esclavo!")
 
-os.makedirs("temp", exist_ok=True)
-
-# API Key
+# Clave API
 ke = st.text_input('Ingresa tu Clave de OpenAI', type="password")
-if not ke:
+if ke:
+    os.environ['OPENAI_API_KEY'] = ke
+else:
     st.warning("Por favor ingresa tu clave de API de OpenAI para continuar")
 
-# Subir PDF
+# Carga PDF
 pdf = st.file_uploader("Carga el archivo PDF", type="pdf")
 
-respuesta_generada = ""
-
-if pdf and ke:
+# Procesamiento del PDF
+if pdf is not None and ke:
     try:
-        reader = PdfReader(pdf)
-        raw_text = "".join(page.extract_text() for page in reader.pages if page.extract_text())
-
-        splitter = CharacterTextSplitter(separator="\n", chunk_size=500, chunk_overlap=50)
-        texts = splitter.split_text(raw_text)
-
-        embeddings = OpenAIEmbeddings(openai_api_key=ke)
-        db = FAISS.from_texts(texts, embeddings)
-
-        st.subheader("Haz tu pregunta sobre el PDF")
-        user_question = st.text_area("Pregunta:")
+        pdf_reader = PdfReader(pdf)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        
+        st.info(f"Texto extraído: {len(text)} caracteres")
+        
+        text_splitter = CharacterTextSplitter(
+            separator="\n", chunk_size=500, chunk_overlap=20, length_function=len
+        )
+        chunks = text_splitter.split_text(text)
+        st.success(f"Documento dividido en {len(chunks)} fragmentos")
+        
+        embeddings = OpenAIEmbeddings()
+        knowledge_base = FAISS.from_texts(chunks, embeddings)
+        
+        st.subheader("Escribe qué quieres saber sobre el documento")
+        user_question = st.text_area(" ", placeholder="Escribe tu pregunta aquí...")
 
         if user_question:
-            docs = db.similarity_search(user_question)
-            llm = ChatOpenAI(model_name="gpt-4", temperature=0, openai_api_key=ke)
+            docs = knowledge_base.similarity_search(user_question)
+            llm = OpenAI(temperature=0, model_name="gpt-4o")
             chain = load_qa_chain(llm, chain_type="stuff")
             response = chain.run(input_documents=docs, question=user_question)
-
+            
             st.markdown("### Respuesta:")
-            respuesta_generada = response
-            st.text_area("Texto generado por la IA:", value=response, height=200)
+            st.markdown(response)
 
-            # Botón para convertir en audio
-            if st.button("🎧 Convertir respuesta en audio"):
-                def text_to_speech(text, lang='es'):
-                    tts = gTTS(text, lang=lang)
-                    filename = "temp/respuesta.mp3"
-                    tts.save(filename)
-                    return filename
+            # Sección de texto a voz
+            st.subheader("Texto para convertir a audio")
+            texto_audio = st.text_area("Texto que se convertirá en audio:", value=response)
 
-                audio_path = text_to_speech(respuesta_generada)
-                with open(audio_path, "rb") as f:
-                    audio_bytes = f.read()
-                    st.audio(audio_bytes, format="audio/mp3")
+            option_lang = st.selectbox("Selecciona el idioma del audio", ("Español", "English"))
+            lg = 'es' if option_lang == "Español" else 'en'
 
-                b64 = base64.b64encode(audio_bytes).decode()
-                href = f'<a href="data:audio/mp3;base64,{b64}" download="respuesta.mp3">⬇️ Descargar Audio</a>'
-                st.markdown(href, unsafe_allow_html=True)
+            try:
+                os.mkdir("temp")
+            except:
+                pass
+
+            def text_to_speech(text, tld, lg):
+                tts = gTTS(text, lang=lg)
+                file_name = text[:20].strip().replace(" ", "_")
+                tts.save(f"temp/{file_name}.mp3")
+                return file_name
+
+            if st.button("Convertir a Audio"):
+                filename = text_to_speech(texto_audio, 'com', lg)
+                audio_path = f"temp/{filename}.mp3"
+                with open(audio_path, "rb") as audio_file:
+                    st.audio(audio_file.read(), format="audio/mp3")
+
+                def get_download_link(file_path):
+                    with open(file_path, "rb") as f:
+                        data = f.read()
+                    b64 = base64.b64encode(data).decode()
+                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(file_path)}">Descargar Audio</a>'
+                    return href
+
+                st.markdown(get_download_link(audio_path), unsafe_allow_html=True)
+
+            def remove_old_files(days_old=7):
+                now = time.time()
+                limit = days_old * 86400
+                for f in glob.glob("temp/*.mp3"):
+                    if os.path.isfile(f) and os.stat(f).st_mtime < now - limit:
+                        os.remove(f)
+
+            remove_old_files()
 
     except Exception as e:
         st.error(f"Error al procesar el PDF: {str(e)}")
-
-# Limpieza
-def remove_old_files(days=7):
-    now = time.time()
-    for f in glob.glob("temp/*.mp3"):
-        if os.stat(f).st_mtime < now - days * 86400:
-            os.remove(f)
-
-remove_old_files()
+        import traceback
+        st.error(traceback.format_exc())
